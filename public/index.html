@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Teleshare</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Landing -->
+  <main id="landing" class="landing" hidden>
+    <div class="card">
+      <h1>📺 Teleshare</h1>
+      <p class="muted">Watch videos together, perfectly in sync, with a shared chat.</p>
+      <label>Your name
+        <input id="nameInput" maxlength="32" placeholder="e.g. Sam" autocomplete="nickname" />
+      </label>
+      <button id="createBtn" class="primary">Start a new party</button>
+      <div class="or">or join one</div>
+      <form id="joinForm" class="row">
+        <input id="codeInput" maxlength="64" placeholder="Room code or link" />
+        <button type="submit">Join</button>
+      </form>
+      <p id="landingError" class="error" hidden></p>
+    </div>
+  </main>
+
+  <!-- Room -->
+  <div id="roomView" class="room" hidden>
+    <header class="topbar">
+      <a href="/" class="brand">📺 Teleshare</a>
+      <form id="loadForm" class="row grow">
+        <input id="urlInput" placeholder="Paste a YouTube link or a direct .mp4 / .webm URL" />
+        <button type="submit" class="primary">Load</button>
+      </form>
+      <button id="shareBtn" title="Copy invite link">🔗 Invite</button>
+      <span id="conn" class="conn" title="Connection status"><span class="dot"></span><span id="connText">Connecting…</span></span>
+    </header>
+
+    <section class="stage-wrap">
+      <div id="stage" class="stage">
+        <div id="empty" class="empty">
+          <p>No video yet.</p>
+          <p class="muted">Paste a link above. Everyone in the room will see it.</p>
+        </div>
+        <div id="pageParty" class="empty" hidden>
+          <p>This party is watching <b id="pageTitle"></b> on <b id="pageHost"></b>.</p>
+          <p class="muted" id="pageStatus"></p>
+          <p><a id="pageOpen" class="btnlink">Open it with the Teleshare extension</a></p>
+          <p class="muted small">You need the Teleshare browser extension (and access to that site) to watch along. You can chat here either way.</p>
+        </div>
+        <video id="video" playsinline preload="auto" hidden></video>
+        <div id="ytHost" hidden><div id="yt"></div></div>
+        <div id="shield" class="shield" hidden></div>
+        <button id="unblock" class="unblock" hidden>▶ Click to join playback</button>
+        <div id="toast" class="toast" hidden></div>
+      </div>
+
+      <div id="controls" class="controls">
+        <button id="playBtn" class="icon" title="Play / pause (space)" disabled>▶</button>
+        <span id="timeNow" class="time">0:00</span>
+        <input id="seek" type="range" min="0" max="0" step="0.1" value="0" disabled />
+        <span id="timeDur" class="time">0:00</span>
+        <button id="muteBtn" class="icon" title="Mute (m)">🔊</button>
+        <input id="vol" type="range" min="0" max="1" step="0.05" value="1" class="vol" />
+        <span id="syncInfo" class="sync" title="How far you are from the room">in sync</span>
+        <button id="fsBtn" class="icon" title="Fullscreen (f)">⛶</button>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="members">
+        <div class="side-h">Watching <span id="memberCount">0</span></div>
+        <ul id="memberList"></ul>
+      </div>
+      <div class="chat">
+        <div class="side-h">Chat</div>
+        <ol id="chatLog"></ol>
+        <form id="chatForm" class="row">
+          <input id="chatInput" maxlength="500" placeholder="Say something…" autocomplete="off" />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </aside>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

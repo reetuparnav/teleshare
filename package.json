@@ -1,0 +1,14 @@
+{
+  "name": "teleshare",
+  "version": "0.1.0",
+  "description": "Watch videos in sync with friends, with shared chat.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/sync.test.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

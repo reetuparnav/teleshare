@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <h1>📺 Teleshare</h1>
+
+  <section id="idle" hidden>
+    <p id="videoHint" class="muted"></p>
+    <button id="startBtn" class="primary">Start a party on this tab</button>
+    <div class="or">or join one</div>
+    <form id="joinForm" class="row">
+      <input id="code" placeholder="Invite link or room code" />
+      <button type="submit">Join</button>
+    </form>
+  </section>
+
+  <section id="active" hidden>
+    <p>You're in room <b id="roomCode"></b> <span id="connState" class="muted"></span></p>
+    <div class="row">
+      <input id="invite" readonly />
+      <button id="copyBtn">Copy</button>
+    </div>
+    <p class="muted small">Friends with the extension can open this link. People without it can still chat from the website.</p>
+    <button id="leaveBtn">Leave party</button>
+  </section>
+
+  <section id="unsupported" hidden>
+    <p class="muted">Open a page with a video (Netflix, YouTube, Prime Video, Disney+, Vimeo…) to start a party. If the page was already open before you installed Teleshare, reload it.</p>
+  </section>
+
+  <details id="settings">
+    <summary>Settings</summary>
+    <label>Your name <input id="name" maxlength="32" placeholder="e.g. Sam" /></label>
+    <label>Server <input id="server" placeholder="http://localhost:3000" /></label>
+    <p class="muted small">Everyone in a party must use the same server. Invite links carry it automatically.</p>
+  </details>
+  <p id="err" class="err" hidden></p>
+  <script src="popup.js"></script>
+</body>
+</html>
