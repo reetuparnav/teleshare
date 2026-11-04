@@ -43,7 +43,9 @@ shares the stream.
 **How the extension avoids the classic bugs:** a play, pause or seek only counts as yours if it
 follows a real click or key press and disagrees with the room. The site's own autoplay,
 buffering pauses and Teleshare's corrections are never broadcast, so nobody gets paused by a
-ghost. On Netflix, seeks go through Netflix's own player API, because setting the video time
+ghost. Videos inside embedded players from other sites (common on anime and aggregator sites)
+are found and synced too: the page and the embed talk through the extension, so the site
+can't forge those messages. On Netflix, seeks go through Netflix's own player API, because setting the video time
 directly crashes Netflix's player (error M7375).
 
 ## How it works
@@ -71,7 +73,6 @@ directly crashes Netflix's player (error M7375).
 ## Limits of this MVP
 
 - The website player handles YouTube and direct video links. Streaming services need the extension.
-- The extension only syncs videos in the page itself, not ones inside embedded iframes from another site.
 - Hardware media keys (headphone buttons) aren't recognised as your action, so the room reverts them.
 - Not yet tested against live Netflix/Prime/Disney+ pages (only against a stand-in site with a strict security policy).
 - Rooms live in memory. Restarting the server clears them.

@@ -8,7 +8,7 @@ function error(text) { $('err').textContent = text || ''; $('err').hidden = !tex
 
 function send(msg) {
   return new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, msg, (res) => resolve(chrome.runtime.lastError ? null : res));
+    chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }, (res) => resolve(chrome.runtime.lastError ? null : res));
   });
 }
 

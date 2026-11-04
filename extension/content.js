@@ -1,7 +1,8 @@
 /* Teleshare extension content script.
  *
  * Finds the main <video> on the page (Netflix, Prime, Disney+, YouTube, Vimeo, any site),
- * connects to a Teleshare server, and keeps that video in sync with the room.
+ * including one inside an embedded player from another site, connects to a Teleshare server,
+ * and keeps that video in sync with the room.
  *
  * Telling the user's clicks apart from the site's own behaviour is the hard part on someone
  * else's player. We only treat a play/pause/seek as the user's if (a) there was a real
@@ -11,8 +12,11 @@
  */
 (() => {
   'use strict';
-  if (window.top !== window || window.__teleshare) return; // top frame only, once
+  if (window.__teleshare) return;
   window.__teleshare = true;
+  // Inside an iframe (an embedded player from another site) we only act as a remote control
+  // for the top page, which owns the party. See runFrameAgent at the bottom.
+  if (window.top !== window) { runFrameAgent(); return; }
 
   const DEFAULT_SERVER = 'http://localhost:3000';
   const IS_NETFLIX = /(^|\.)netflix\.com$/.test(location.hostname);
@@ -207,67 +211,160 @@
   }
   const userJustActed = (ms = USER_INPUT_WINDOW) => Date.now() - lastUserInput < ms;
 
-  function findVideo() {
+  // `video` is a handle with one interface whether the <video> is in this page or inside an
+  // embedded iframe (then it's a proxy driven by messages from that frame's agent).
+  // Handle: { key, currentTime, paused, ended, duration, readyState, seeking, playbackRate,
+  //           play() -> Promise, pause(), seek(t), setRate(r) }
+
+  const localHandles = new WeakMap();
+  function localHandle(v) {
+    if (localHandles.has(v)) return localHandles.get(v);
+    const h = {
+      key: 'local:' + randId(6), el: v,
+      get currentTime() { return v.currentTime; }, get paused() { return v.paused; }, get ended() { return v.ended; },
+      get duration() { return v.duration; }, get readyState() { return v.readyState; }, get seeking() { return v.seeking; },
+      get playbackRate() { return v.playbackRate; },
+      play: () => v.play(),
+      pause: () => v.pause(),
+      seek(t) {
+        // Setting currentTime directly crashes Netflix's player (M7375); go through its API.
+        if (IS_NETFLIX) window.postMessage({ __teleshare: 'nf-seek', ms: t * 1000 }, '*');
+        else v.currentTime = t;
+      },
+      setRate(r) {
+        if (IS_NETFLIX) return; // Netflix's player doesn't tolerate rate changes; seeks only.
+        if (Math.abs(v.playbackRate - r) > 0.001) safe(() => { v.playbackRate = r; });
+      },
+    };
+    const user = () => userJustActed();
+    v.addEventListener('play', () => { if (video === h) onVideoEvent('play', user()); });
+    v.addEventListener('pause', () => { if (video === h) onVideoEvent('pause', user()); });
+    v.addEventListener('seeked', () => { if (video === h) onVideoEvent('seeked', userJustActed(3000)); });
+    v.addEventListener('ended', () => { if (video === h) onVideoEvent('ended', false); });
+    localHandles.set(v, h);
+    return h;
+  }
+
+  // Latest report from each embedded frame's agent: frameId -> { snap, handle }
+  const frames = new Map();
+  function remoteHandle(frameId, vid) {
+    const f = frames.get(frameId);
+    if (f && f.handle && f.handle.vid === vid) return f.handle;
+    const snap = () => (frames.get(frameId) || {}).snap || {};
+    const cmd = (c, extra) => toFrame(frameId, Object.assign({ type: 'cmd', cmd: c, vid }, extra));
+    const h = {
+      key: 'frame:' + frameId + ':' + vid, vid, remote: true,
+      get currentTime() {
+        const s = snap();
+        const moving = !s.paused && !s.seeking && s.readyState >= 3;
+        return (s.t || 0) + (moving ? (Math.min(Date.now() - s.at, 1000) / 1000) * (s.rate || 1) : 0);
+      },
+      get paused() { return snap().paused !== false; }, get ended() { return !!snap().ended; },
+      get duration() { return snap().duration || NaN; }, get readyState() { return snap().readyState || 0; },
+      get seeking() { return !!snap().seeking; }, get playbackRate() { return snap().rate || 1; },
+      play() {
+        // The frame answers with { blocked } once its play() promise settles.
+        return new Promise((resolve, reject) => {
+          const f2 = frames.get(frameId); if (!f2) return reject(new Error('gone'));
+          f2.pendingPlay = { resolve, reject, at: Date.now() };
+          cmd('play');
+        });
+      },
+      pause() { const s = snap(); s.paused = true; cmd('pause'); },
+      seek(t) { const s = snap(); s.t = t; s.at = Date.now(); cmd('seek', { t }); },
+      setRate(r) { if (Math.abs((snap().rate || 1) - r) > 0.004 || (r === 1 && snap().rate !== 1)) { snap().rate = r; cmd('rate', { r }); } },
+    };
+    if (f) f.handle = h;
+    return h;
+  }
+
+  function toFrame(frameId, msg) { safe(() => chrome.runtime.sendMessage({ __ts: 'down', frameId, msg }).catch(() => {})); }
+  function activateFrames() { toFrame('all', { type: 'activate' }); }
+
+  function onFrameMessage(frameId, m) {
+    let f = frames.get(frameId);
+    if (m.type === 'snap') {
+      if (!f) { f = {}; frames.set(frameId, f); }
+      f.snap = Object.assign({}, m.snap, { at: Date.now() });
+      f.seenAt = Date.now();
+      if (f.handle && f.handle.vid !== m.snap.vid) f.handle = null;
+    } else if (!f) {
+      return;
+    } else if (m.type === 'event') {
+      if (f.snap) Object.assign(f.snap, m.snap, { at: Date.now() });
+      const h = video && video.remote && video.key === 'frame:' + frameId + ':' + m.vid ? video : null;
+      // A click inside the embedded player counts as the user's (the frame saw it), and so
+      // does a click on this page's own controls around the embed.
+      if (h) onVideoEvent(m.name, m.user || userJustActed(m.name === 'seeked' ? 3000 : USER_INPUT_WINDOW));
+    } else if (m.type === 'played' && f.pendingPlay) {
+      const p = f.pendingPlay; f.pendingPlay = null;
+      if (m.blocked) { const e = new Error('blocked'); e.name = 'NotAllowedError'; p.reject(e); } else p.resolve();
+    }
+  }
+
+  function findLocalVideo() {
     let best = null, bestArea = 0;
     for (const v of document.querySelectorAll('video')) {
       const r = v.getBoundingClientRect();
       const area = r.width * r.height;
       if (area > bestArea && r.width > 120 && r.height > 80) { best = v; bestArea = area; }
     }
+    return best ? { v: best, area: bestArea } : null;
+  }
+
+  // The biggest video wins, whether it's in this page or in an embed.
+  function findVideo() {
+    const local = findLocalVideo();
+    let best = local ? localHandle(local.v) : null, bestArea = local ? local.area : 0;
+    const n = Date.now();
+    for (const [frameId, f] of frames) {
+      if (!f.snap || n - f.seenAt > 2500) continue;
+      if (f.snap.area > bestArea) { best = remoteHandle(frameId, f.snap.vid); bestArea = f.snap.area; }
+    }
     return best;
   }
 
-  const onPlay = () => {
-    if (!session || !roomMatchesPage() || !state) return;
-    if (!state.playing && userJustActed()) act('play', video.currentTime);
-  };
-  const onPause = () => {
-    if (!session || !roomMatchesPage() || !state || video.ended) return;
-    if (state.playing && userJustActed()) act('pause', video.currentTime);
-  };
-  const onSeeked = () => {
-    if (!session || !roomMatchesPage() || !state) return;
-    if (Date.now() - ourSeekAt < 1500) return; // our own correction landing
-    if (Math.abs(video.currentTime - expected()) > 1 && userJustActed(3000)) act('seek', video.currentTime);
-  };
-  const onEnded = () => {
-    if (state && state.playing && roomMatchesPage()) conn.send({ t: 'ended', position: video.duration, mediaUrl: state.media.url });
-  };
+  function onVideoEvent(name, user) {
+    if (!session || !roomMatchesPage() || !state || !video) return;
+    if (name === 'play') { if (!state.playing && user) act('play', video.currentTime); }
+    else if (name === 'pause') { if (!video.ended && state.playing && user) act('pause', video.currentTime); }
+    else if (name === 'seeked') {
+      if (Date.now() - ourSeekAt < 1500) return; // our own correction landing
+      if (Math.abs(video.currentTime - expected()) > 1 && user) act('seek', video.currentTime);
+    } else if (name === 'ended') {
+      if (state.playing) conn.send({ t: 'ended', position: video.duration, mediaUrl: state.media.url });
+    }
+  }
 
-  function bindVideo(v) {
-    if (v === video) return;
-    if (video) {
-      video.removeEventListener('play', onPlay); video.removeEventListener('pause', onPause);
-      video.removeEventListener('seeked', onSeeked); video.removeEventListener('ended', onEnded);
-    }
-    video = v;
-    if (v) {
-      v.addEventListener('play', onPlay); v.addEventListener('pause', onPause);
-      v.addEventListener('seeked', onSeeked); v.addEventListener('ended', onEnded);
-    }
+  function bindVideo(h) {
+    if ((h && h.key) === (video && video.key)) return;
+    video = h;
+    playPending = false;
     ui.refresh();
   }
   let lastUrl = cleanUrl();
   setInterval(() => {
-    if (session || document.querySelector('video')) bindVideo(findVideo());
+    if (session) activateFrames();
+    if (session || frames.size || document.querySelector('video')) bindVideo(findVideo());
     if (cleanUrl() !== lastUrl) { lastUrl = cleanUrl(); if (session && conn.joined) followMedia(false); }
   }, 1000);
 
   function seekTo(t) {
     ourSeekAt = Date.now();
-    if (IS_NETFLIX) window.postMessage({ __teleshare: 'nf-seek', ms: t * 1000 }, '*');
-    else video.currentTime = t;
+    video.seek(t);
   }
-  function setRate(r) {
-    if (IS_NETFLIX) return; // Netflix's player doesn't tolerate rate changes; seeks only.
-    if (Math.abs(video.playbackRate - r) > 0.001) safe(() => { video.playbackRate = r; });
-  }
+  function setRate(r) { video.setRate(r); }
   function tryPlay() {
     if (playPending) return;
     playPending = true;
-    const p = safe(() => video.play());
-    if (p && p.then) p.then(() => { playPending = false; setBlocked(false); }, (e) => { playPending = false; if (e && e.name === 'NotAllowedError') setBlocked(true); });
-    else playPending = false;
+    let p = null;
+    try { p = video.play(); } catch (_) { /* ignore */ }
+    const h = video;
+    const done = () => { if (video === h) playPending = false; };
+    if (p && p.then) {
+      p.then(() => { done(); setBlocked(false); }, (e) => { done(); if (e && e.name === 'NotAllowedError') setBlocked(true); });
+      setTimeout(done, 3000); // a frame that never answers mustn't wedge us
+    } else done();
   }
   function setBlocked(b) { if (blocked !== b) { blocked = b; ui.refresh(); } }
 
@@ -322,7 +419,13 @@
     conn.send({ t: 'control', action, position: pos, mediaUrl: state.media.url });
   }
 
-  function bringEveryoneHere() {
+  async function bringEveryoneHere() {
+    if (!video) {
+      // An embedded player may not have reported in yet; give it a moment.
+      activateFrames();
+      await new Promise((r) => setTimeout(r, 700));
+      bindVideo(findVideo());
+    }
     if (!video) { ui.toast('No video found on this page yet.'); return; }
     conn.send({ t: 'load', page: true, url: cleanUrl(), title: pageTitle(), position: video.currentTime, playing: !video.paused });
   }
@@ -373,8 +476,16 @@
   const inviteLink = () => (session ? session.server + '/r/' + session.room : null);
 
   chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+    if (msg && msg.__ts === 'up') { onFrameMessage(msg.frameId, msg.msg); return false; }
+    if (!msg || !msg.cmd) return false;
     (async () => {
       await loadSettings();
+      if (!session && !video) {
+        // Ask embedded frames whether they have a video before answering "no video here".
+        activateFrames();
+        await new Promise((r) => setTimeout(r, 700));
+        bindVideo(findVideo());
+      }
       if (msg.cmd === 'start') startParty({ start: true, server: msg.server });
       else if (msg.cmd === 'join') startParty({ room: msg.room, server: msg.server, follow: true });
       else if (msg.cmd === 'leave') leaveParty();
@@ -569,4 +680,69 @@
     const saved = safe(() => JSON.parse(sessionStorage.getItem(SESSION_KEY)));
     if (saved && saved.room) { startParty({ room: saved.room, server: saved.server }); everJoined = true; } // a reload is a rejoin
   })();
+  // ------------------------------------------------------------ embedded-frame agent
+  // Runs inside iframes. Reports this frame's main video to the top page (through the
+  // extension's background worker, so the page itself can't forge these messages) and
+  // carries out play/pause/seek commands. It only talks while the top page is in a party.
+  function runFrameAgent() {
+    let activeUntil = 0, lastUserInput = 0, bound = null;
+    const vids = new WeakMap();
+    for (const type of ['pointerdown', 'pointerup', 'keydown', 'click']) {
+      window.addEventListener(type, (e) => { if (e.isTrusted) lastUserInput = Date.now(); }, true);
+    }
+    const recently = (ms) => Date.now() - lastUserInput < ms;
+    const up = (msg) => { try { chrome.runtime.sendMessage({ __ts: 'up', msg }).catch(() => {}); } catch (_) { activeUntil = 0; } };
+    const vidOf = (v) => { if (!vids.has(v)) vids.set(v, Math.random().toString(36).slice(2, 10)); return vids.get(v); };
+
+    function pick() {
+      let best = null, bestArea = 0;
+      for (const v of document.querySelectorAll('video')) {
+        const r = v.getBoundingClientRect();
+        const area = r.width * r.height;
+        if (area > bestArea && r.width > 120 && r.height > 80) { best = v; bestArea = area; }
+      }
+      return best ? { v: best, area: bestArea } : null;
+    }
+    function snapOf(v, area) {
+      return { vid: vidOf(v), t: v.currentTime, paused: v.paused, ended: v.ended, seeking: v.seeking,
+        duration: Number.isFinite(v.duration) ? v.duration : 0, readyState: v.readyState, rate: v.playbackRate, area };
+    }
+    function report() {
+      if (Date.now() > activeUntil) return;
+      const p = pick();
+      if (!p) return;
+      bind(p.v);
+      up({ type: 'snap', snap: snapOf(p.v, p.area) });
+    }
+    function bind(v) {
+      if (bound === v) return;
+      bound = v;
+      const send = (name, user) => {
+        if (bound !== v || Date.now() > activeUntil) return;
+        const r = v.getBoundingClientRect();
+        up({ type: 'event', name, vid: vidOf(v), user, snap: snapOf(v, r.width * r.height) });
+      };
+      v.addEventListener('play', () => send('play', recently(1500)));
+      v.addEventListener('pause', () => send('pause', recently(1500)));
+      v.addEventListener('seeked', () => send('seeked', recently(3000)));
+      v.addEventListener('ended', () => send('ended', false));
+    }
+    chrome.runtime.onMessage.addListener((m) => {
+      if (!m || m.__ts !== 'down') return false;
+      const msg = m.msg || {};
+      if (msg.type === 'activate') { const was = Date.now() <= activeUntil; activeUntil = Date.now() + 4000; if (!was) report(); return false; }
+      if (msg.type !== 'cmd' || !bound || vidOf(bound) !== msg.vid) return false;
+      const v = bound;
+      if (msg.cmd === 'play') {
+        let p; try { p = v.play(); } catch (_) { p = null; }
+        if (p && p.then) p.then(() => up({ type: 'played', blocked: false }), (e) => up({ type: 'played', blocked: !!(e && e.name === 'NotAllowedError') }));
+        else up({ type: 'played', blocked: false });
+      } else if (msg.cmd === 'pause') v.pause();
+      else if (msg.cmd === 'seek' && Number.isFinite(msg.t)) v.currentTime = msg.t;
+      else if (msg.cmd === 'rate' && Number.isFinite(msg.r)) { try { v.playbackRate = msg.r; } catch (_) { /* ignore */ } }
+      setTimeout(report, 50);
+      return false;
+    });
+    setInterval(report, 250);
+  }
 })();
