@@ -18,7 +18,7 @@
   // for the top page, which owns the party. See runFrameAgent at the bottom.
   if (window.top !== window) { runFrameAgent(); return; }
 
-  const DEFAULT_SERVER = 'http://localhost:3000';
+  const DEFAULT_SERVER = 'https://teleshare-qcf9.onrender.com';
   const IS_NETFLIX = /(^|\.)netflix\.com$/.test(location.hostname);
   const HARD_DRIFT = IS_NETFLIX ? 1.5 : 1.0;
   const SEEK_COOLDOWN = IS_NETFLIX ? 2500 : 1200;

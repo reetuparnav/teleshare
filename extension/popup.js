@@ -1,6 +1,6 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
-const DEFAULT_SERVER = 'http://localhost:3000';
+const DEFAULT_SERVER = 'https://teleshare-qcf9.onrender.com';
 let tabId = null;
 
 function show(which) { for (const id of ['idle', 'active', 'unsupported']) $(id).hidden = id !== which; }
@@ -56,12 +56,15 @@ $('name').addEventListener('change', async () => {
   await chrome.storage.sync.set({ name });
   if (tabId != null) send({ cmd: 'rename', name });
 });
-$('server').addEventListener('change', async () => {
-  let v = $('server').value.trim().replace(/\/+$/, '');
-  if (!/^https?:\/\/[^/]+$/.test(v)) { error('Server should look like https://your-server.example'); return; }
+// Save as you type too: closing the popup while the box still has focus never fires 'change'.
+async function saveServer(showError) {
+  const v = $('server').value.trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/[^/]+$/.test(v)) { if (showError) error('Server should look like https://your-server.example'); return; }
   error('');
   await chrome.storage.sync.set({ server: v });
-});
+}
+$('server').addEventListener('input', () => saveServer(false));
+$('server').addEventListener('change', () => saveServer(true));
 $('startBtn').onclick = async () => {
   await chrome.storage.sync.set({ name: $('name').value.trim().slice(0, 32) });
   render(await send({ cmd: 'start' }));
