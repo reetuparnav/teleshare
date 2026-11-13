@@ -13,6 +13,11 @@ npm start            # http://localhost:3000  (set PORT to change)
 npm test             # protocol tests
 ```
 
+**Put it online (free):** [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/reetuparnav/teleshare)
+Sign in with GitHub, click **Deploy**, and you get an address like `https://teleshare-xxxx.onrender.com`.
+Put that address in the extension's Settings → Server. The free plan sleeps after 15 minutes
+without visitors, so the first person to join may wait about a minute while it wakes up.
+
 To watch with friends who aren't on your network, deploy it anywhere that runs Node and allows
 WebSockets (Render, Railway, Fly.io, a VPS). For a quick test, run
 `cloudflared tunnel --url http://localhost:3000` and share that URL.

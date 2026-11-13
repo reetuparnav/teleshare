@@ -1,0 +1,9 @@
+# One-click deploy on Render (free plan): https://render.com/deploy?repo=https://github.com/reetuparnav/teleshare
+services:
+  - type: web
+    name: teleshare
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
