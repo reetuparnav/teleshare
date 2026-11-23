@@ -42,6 +42,8 @@ function parseInvite(text) {
 async function init() {
   const s = await chrome.storage.sync.get(['server', 'name']);
   $('server').value = s.server || DEFAULT_SERVER;
+  // The free server sleeps when idle: start waking it now, so it's up by the time you join.
+  fetch((s.server || DEFAULT_SERVER) + '/healthz', { mode: 'no-cors', cache: 'no-store' }).catch(() => {});
   $('name').value = s.name || '';
   if (!s.name) $('settings').open = true;
 

@@ -166,3 +166,26 @@ test('rejects bad input', async () => {
   assert.match(e2.text, /room/i);
   await Promise.all([a.close(), bad.close()]);
 });
+
+test('page parties: episode key + duplicate moves are ignored', async () => {
+  const a = client('room7', 'Alice', 'aliceid0007');
+  const b = client('room7', 'Bob', 'bobid000007');
+  await Promise.all([a.ready, b.ready]);
+  const url = 'https://www.primevideo.com/detail/B0TEST1234/';
+  a.send({ t: 'load', page: true, url, title: 'Show', key: 'prime#s1e4', episode: 'Season 1, Ep. 4', position: 10, playing: true });
+  const s1 = (await b.next((m) => m.t === 'state')).state;
+  assert.strictEqual(s1.media.key, 'prime#s1e4');
+  assert.strictEqual(s1.media.episode, 'Season 1, Ep. 4');
+  assert.strictEqual(s1.playing, true);
+
+  a.send({ t: 'load', page: true, move: true, url, title: 'Show', key: 'prime#s1e5', episode: 'Season 1, Ep. 5', position: 0, playing: true });
+  const s2 = (await b.next((m) => m.t === 'state' && m.state.version > s1.version)).state;
+  assert.strictEqual(s2.media.key, 'prime#s1e5');
+  const sys = await b.next((m) => m.t === 'chat' && m.msg.system && /moved the party/.test(m.msg.text));
+  assert.match(sys.msg.text, /Alice moved the party to Show \(Season 1, Ep\. 5\)/);
+
+  // Bob's player auto-advanced to the same episode a moment later: no reset.
+  b.send({ t: 'load', page: true, move: true, url, title: 'Show', key: 'prime#s1e5', episode: 'Season 1, Ep. 5', position: 0, playing: true });
+  await assert.rejects(a.next((m) => m.t === 'state' && m.state.version > s2.version, 400));
+  await Promise.all([a.close(), b.close()]);
+});

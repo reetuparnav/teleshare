@@ -191,7 +191,9 @@
     }
 
     const url = next.media ? next.media.url : null;
-    if ((player ? player.url : shownPageUrl) !== url) { shownPageUrl = next.media && next.media.kind === 'page' ? url : null; setMedia(next.media); }
+    // Extension parties can switch episodes without the address changing (Prime), so compare keys.
+    const pageId = next.media && next.media.kind === 'page' ? (next.media.key || url) : null;
+    if (pageId ? shownPageUrl !== pageId : (player ? player.url : shownPageUrl) !== url) { shownPageUrl = pageId; setMedia(next.media); }
     if (next.media && document.activeElement !== $('urlInput')) $('urlInput').value = next.media.url;
     seekCooldownUntil = 0; // a fresh authoritative state deserves an immediate correction
     tick();
@@ -322,7 +324,7 @@
     if (isPage) {
       // Playback happens on another site via the browser extension; this page is chat + a door.
       const u = new URL(media.url);
-      $('pageTitle').textContent = media.title || u.hostname;
+      $('pageTitle').textContent = (media.title || u.hostname) + (media.episode ? ' (' + media.episode + ')' : '');
       $('pageHost').textContent = u.hostname;
       $('pageOpen').href = media.url + '#teleshare=' + encodeURIComponent(roomId) + '&server=' + encodeURIComponent(location.origin);
       return;
