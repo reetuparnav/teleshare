@@ -224,11 +224,22 @@ wss.on('connection', (ws) => {
         // From the browser extension: the video plays on a website (Netflix, etc.), not in our player.
         if (m.page === true) {
           media = { kind: 'page', url: media.url, title: cleanText(m.title, 120) || new URL(media.url).hostname };
+          // `key` says which video this is when the address alone doesn't (Prime Video keeps one
+          // address for a whole season); `episode` is a human label like "Season 1, Ep. 5".
+          const key = cleanText(m.key, 300);
+          const episode = cleanText(m.episode, 80);
+          if (key) media.key = key;
+          if (episode) media.episode = episode;
+          // Two viewers auto-advancing to the same next episode at once: keep the first move.
+          const cur = room.state.media;
+          if (key && cur && cur.kind === 'page' && cur.key === key) break;
         }
         const startAt = media.kind === 'page' && isFiniteNum(m.position) && m.position >= 0 ? m.position : 0;
         const startPlaying = media.kind === 'page' && m.playing === true;
         room.setState({ media, playing: startPlaying, position: startAt, rate: 1 }, client);
-        room.system(media.kind === 'page' ? `${client.name} started watching ${media.title}` : `${client.name} loaded a new video`);
+        const what = media.episode ? `${media.title} (${media.episode})` : media.title;
+        room.system(media.kind !== 'page' ? `${client.name} loaded a new video`
+          : m.move === true ? `${client.name} moved the party to ${what}` : `${client.name} started watching ${what}`);
         break;
       }
       case 'control': {

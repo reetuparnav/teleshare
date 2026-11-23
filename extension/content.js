@@ -18,7 +18,8 @@
   // for the top page, which owns the party. See runFrameAgent at the bottom.
   if (window.top !== window) { runFrameAgent(); return; }
 
-  const DEFAULT_SERVER = 'http://localhost:3000';
+  const DEFAULT_SERVER = 'https://teleshare-qcf9.onrender.com';
+  const WAKING = 'Waking up the server… (can take up to a minute)';
   const IS_NETFLIX = /(^|\.)netflix\.com$/.test(location.hostname);
   const HARD_DRIFT = IS_NETFLIX ? 1.5 : 1.0;
   const SEEK_COOLDOWN = IS_NETFLIX ? 2500 : 1200;
@@ -35,12 +36,18 @@
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
     return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0');
   };
-  // Identifies "the same video page", ignoring tracking params (Netflix adds ?trackId=…).
-  // YouTube keeps the video in ?v=, so that one param counts.
+  const IS_PRIME = /(^|\.)primevideo\.com$/.test(location.hostname) ||
+    (/(^|\.)amazon\.[a-z.]+$/.test(location.hostname) && /\/(gp\/video|video)\//.test(location.pathname));
+
+  // Identifies "the same video page". Tracking junk is ignored (Netflix's ?trackId=…, Amazon's
+  // /ref=… path segments), but query params that usually name the video or episode count
+  // (YouTube's ?v=, many sites' ?ep= / ?episode= / ?id=).
+  const EPISODE_PARAMS = /^(v|ep|episode|episode_?id|eid|e|id|vid|video|video_?id|s|season)$/i;
   const pageKey = (url) => safe(() => {
     const u = new URL(url);
-    const v = u.searchParams.get('v');
-    return u.origin + u.pathname.replace(/\/+$/, '') + (v ? '?v=' + v : '');
+    const keep = [...u.searchParams].filter(([k]) => EPISODE_PARAMS.test(k)).sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([k, v]) => k + '=' + v).join('&');
+    return u.origin + u.pathname.replace(/\/ref=[^/]*/g, '').replace(/\/+$/, '') + (keep ? '?' + keep : '');
   }, url);
   const cleanUrl = () => location.href.split('#')[0];
 
@@ -77,7 +84,11 @@
 
   const expectedAt = (s, at) => (!s ? 0 : s.playing ? s.position + ((at - s.updatedAt) / 1000) * (s.rate || 1) : s.position);
   const expected = () => expectedAt(state, clock.now());
-  const roomMatchesPage = () => !!(state && state.media && state.media.kind === 'page' && pageKey(state.media.url) === pageKey(cleanUrl()));
+  // What this tab is watching right now. On most sites that's the page address, but Prime Video
+  // keeps the same address across episodes, so there the episode shown in its player counts.
+  let identity = { key: pageKey(cleanUrl()), ep: null };
+  const mediaKey = (media) => media.key || pageKey(media.url);
+  const roomMatchesPage = () => !!(state && state.media && state.media.kind === 'page' && mediaKey(state.media) === identity.key);
 
   // ------------------------------------------------------------ connection
   const conn = {
@@ -89,9 +100,15 @@
       try { ws = new WebSocket(session.server.replace(/^http/, 'ws') + '/ws'); }
       catch (e) { ui.status('bad', 'Bad server address'); return; }
       this.ws = ws;
-      ui.status('wait', this.attempt ? 'Reconnecting…' : 'Connecting…');
+      ui.status('wait', everJoined ? 'Reconnecting…' : this.attempt ? WAKING : 'Connecting…');
+      // An attempt can hang while a sleeping (free-tier) server boots. Don't wait on it forever:
+      // give up after a few seconds and try again, so nobody has to refresh the page.
+      clearTimeout(this.connectTimer); clearTimeout(this.slowTimer);
+      this.connectTimer = setTimeout(() => { if (this.ws === ws && ws.readyState === 0) { safe(() => ws.close()); this.dropped(1006); } }, 8000);
+      this.slowTimer = setTimeout(() => { if (this.ws === ws && ws.readyState === 0 && !everJoined) ui.status('wait', WAKING); }, 2500);
       ws.onopen = () => {
         if (this.ws !== ws) return;
+        clearTimeout(this.connectTimer); clearTimeout(this.slowTimer);
         this.lastMsg = Date.now();
         for (let i = 0; i < 5; i++) setTimeout(() => this.ping(), i * 120);
         clearInterval(this.pingTimer);
@@ -109,11 +126,14 @@
     },
     dropped(code) {
       this.ws = null; this.joined = false; clearInterval(this.pingTimer);
+      clearTimeout(this.connectTimer); clearTimeout(this.slowTimer);
       if (!session) return;
       if (code === 4000) { ui.status('bad', 'Opened in another tab'); return; }
-      const delay = Math.min(10000, 500 * 2 ** this.attempt) * (0.6 + Math.random() * 0.4);
+      // Before the first successful join the server is most likely just waking up: retry often.
+      const cap = everJoined ? 10000 : 3000;
+      const delay = Math.min(cap, 500 * 2 ** this.attempt) * (0.6 + Math.random() * 0.4);
       this.attempt++;
-      ui.status('bad', 'Reconnecting…');
+      if (everJoined) ui.status('bad', 'Reconnecting…'); else ui.status('wait', WAKING);
       this.timer = setTimeout(() => this.connect(), delay);
     },
     ping() { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify({ t: 'ping', c: Date.now() })); },
@@ -122,7 +142,7 @@
       this.ping();
     },
     send(msg) { if (this.ws && this.ws.readyState === 1 && this.joined) { this.ws.send(JSON.stringify(msg)); return true; } return false; },
-    close() { clearTimeout(this.timer); clearInterval(this.pingTimer); const ws = this.ws; this.ws = null; this.joined = false; safe(() => ws.close()); },
+    close() { clearTimeout(this.timer); clearTimeout(this.connectTimer); clearTimeout(this.slowTimer); clearInterval(this.pingTimer); const ws = this.ws; this.ws = null; this.joined = false; safe(() => ws.close()); },
     nudge() { if (!session) return; if (!this.ws) { this.attempt = 0; this.connect(); } else if (this.ws.readyState === 1) this.watchdog(); },
   };
   window.addEventListener('online', () => conn.nudge());
@@ -141,8 +161,8 @@
         // Starting a party from this tab: the room adopts this page and where we are in it.
         if (session.start) {
           session.start = false; saveSession();
-          const v = video;
-          conn.send({ t: 'load', page: true, url: cleanUrl(), title: pageTitle(), position: v ? v.currentTime : 0, playing: v ? !v.paused : false });
+          identity = pageIdentity();
+          sendLoad(false);
         }
         break;
       }
@@ -154,7 +174,8 @@
   }
 
   function pageTitle() {
-    const t = document.title.replace(/\s*[-|–]\s*(Netflix|YouTube|Prime Video|Disney\+|Max|Hulu|Vimeo)\s*$/i, '').trim();
+    const t = document.title.replace(/\s*[-|–]\s*(Netflix|YouTube|Prime Video|Disney\+|Max|Hulu|Vimeo)\s*$/i, '')
+      .replace(/^\s*(Prime Video|Amazon\.[a-z.]+)\s*:\s*/i, '').trim();
     return (t || location.hostname).slice(0, 120);
   }
 
@@ -167,7 +188,11 @@
       if (prev.playing !== next.playing) ui.toast(`${next.by} ${next.playing ? 'pressed play' : 'paused'}`);
       else if (Math.abs(expectedAt(prev, next.updatedAt) - next.position) > 1.5) ui.toast(`${next.by} jumped to ${fmt(next.position)}`);
     }
-    const mediaChanged = !!prev && !force && (prev.media && prev.media.url) !== (next.media && next.media.url);
+    const keyOf = (s) => (s && s.media ? mediaKey(s.media) : null);
+    const mediaChanged = !!prev && !force && keyOf(prev) !== keyOf(next);
+    if (mediaChanged && next.by && next.by !== me.name && next.media && next.media.kind === 'page') {
+      ui.toast(`${next.by} moved the party to ${next.media.episode || next.media.title}`);
+    }
     // Auto-follow when someone switches the party to a new page, or when we just arrived from an
     // invite. Never when we navigated away ourselves (that would yank us back).
     followMedia(mediaChanged || !!session.follow);
@@ -186,10 +211,20 @@
     }
     if (roomMatchesPage()) return;
     const target = new URL(state.media.url);
+    const where = state.media.episode ? `“${state.media.episode}”` : `“${state.media.title}”`;
     if (target.origin === location.origin && autoFollow) {
-      ui.banner(`Following the party to “${state.media.title}”…`);
-      // Session is kept in sessionStorage, so the reload rejoins automatically.
+      // Prime keeps one address for a whole season, so switching episodes means pressing the
+      // right button in the page rather than navigating.
+      if (IS_PRIME && /^prime#/.test(mediaKey(state.media)) && pageKey(state.media.url) === pageKey(cleanUrl())) {
+        primeSwitchTo(state.media);
+        return;
+      }
+      ui.banner(`Following the party to ${where}…`);
+      // Session is kept in sessionStorage, so the reload rejoins (and keeps following) automatically.
+      session.follow = true; saveSession();
       setTimeout(() => { if (state && state.media && !roomMatchesPage()) location.assign(state.media.url); }, 1200);
+    } else if (target.origin === location.origin) {
+      ui.banner(`The party is watching ${where}.`, 'open', state.media.url + '#teleshare=' + session.room + '&server=' + encodeURIComponent(session.server));
     } else {
       ui.banner(`The party is watching “${state.media.title}”${target.origin === location.origin ? '' : ' on ' + target.hostname}.`, 'open', state.media.url + '#teleshare=' + session.room + '&server=' + encodeURIComponent(session.server));
     }
@@ -342,12 +377,120 @@
     playPending = false;
     ui.refresh();
   }
-  let lastUrl = cleanUrl();
   setInterval(() => {
     if (session) activateFrames();
     if (session || frames.size || document.querySelector('video')) bindVideo(findVideo());
-    if (cleanUrl() !== lastUrl) { lastUrl = cleanUrl(); if (session && conn.joined) followMedia(false); }
+    checkIdentity();
   }, 1000);
+
+  // ------------------------------------------------------------ episode changes
+  // Prime shows e.g. "Season 1, Ep. 5 Title" (or "Staffel 1, Folge 5 …") in its player. Only the
+  // two numbers are used, so it works whatever language each viewer's Prime is in.
+  let lastEp = null;
+  function siteEpisode() {
+    if (!IS_PRIME) return null;
+    for (const sel of ['.atvwebplayersdk-subtitle-text', '[class*="webplayersdk-subtitle"]']) {
+      const el = document.querySelector(sel);
+      const text = el && el.textContent.replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      const two = text.match(/(\d+)\D{1,20}?(\d+)/);
+      const one = text.match(/(\d+)/);
+      const tag = two ? `s${+two[1]}e${+two[2]}` : one ? `e${+one[1]}` : null;
+      if (!tag) continue;
+      lastEp = { tag, label: text.slice(0, 80), vkey: video && video.key, dur: video ? video.duration : NaN };
+      return lastEp;
+    }
+    // The label can vanish while the player hides its controls: keep the last one as long as
+    // it's clearly still the same video.
+    if (lastEp && video && video.key === lastEp.vkey && Math.abs((video.duration || 0) - (lastEp.dur || 0)) < 2) return lastEp;
+    return null;
+  }
+  function pageIdentity() {
+    const ep = siteEpisode();
+    if (IS_PRIME && ep) return { key: 'prime#' + ep.tag, ep };
+    return { key: pageKey(cleanUrl()), ep: null };
+  }
+
+  let pendingIdentity = null; // a change we've seen but that hasn't settled yet
+  let lastNearEndAt = 0;
+  function checkIdentity() {
+    const now = pageIdentity();
+    if (now.key === identity.key) { pendingIdentity = null; return; }
+    if (!pendingIdentity || pendingIdentity.key !== now.key) {
+      pendingIdentity = { key: now.key, since: Date.now(), byUser: userJustActed(6000), nearEnd: Date.now() - lastNearEndAt < 20000 };
+      return;
+    }
+    if (Date.now() - pendingIdentity.since < 1500) return; // let the page settle (labels lag, players reload)
+    const p = pendingIdentity; pendingIdentity = null;
+    const prev = identity;
+    identity = now;
+    onIdentityChange(prev, p);
+  }
+
+  function onIdentityChange(prev, how) {
+    if (!session || !conn.joined || !state || !state.media || state.media.kind !== 'page') { ui.refresh(); return; }
+    if (roomMatchesPage()) { followMedia(false); seekCooldownUntil = 0; tick(); return; } // we caught up with the party
+    const wasWithParty = mediaKey(state.media) === prev.key;
+    // You moved on to another video while watching with the party, by clicking (e.g. "Next
+    // episode") or because the episode ended and the site auto-played the next one: take
+    // everyone along. Anything else (wandering off, the site doing things by itself) just shows
+    // the "Bring everyone here" button instead.
+    if (wasWithParty && (how.byUser || how.nearEnd) && video) {
+      sendLoad(true);
+    } else {
+      followMedia(false);
+    }
+  }
+
+  function sendLoad(move) {
+    const ep = identity.ep;
+    conn.send({
+      t: 'load', page: true, move, url: cleanUrl(), title: pageTitle(), key: identity.key,
+      episode: ep ? ep.label : undefined,
+      position: video ? video.currentTime : 0, playing: video ? !video.paused : false,
+    });
+  }
+
+  // Following the party to another Prime episode on the same season page.
+  let primeSwitch = { tag: null, at: 0 };
+  function primeSwitchTo(media) {
+    const tag = mediaKey(media).slice('prime#'.length);
+    const label = media.episode || tag.toUpperCase();
+    if (primeSwitch.tag === tag && Date.now() - primeSwitch.at < 10000) return; // already on it
+    primeSwitch = { tag, at: Date.now() };
+    const clicked = clickPrimeEpisode(tag);
+    ui.banner(clicked ? `Switching to “${label}”…` : null);
+    setTimeout(() => {
+      if (!state || !state.media || mediaKey(state.media) !== 'prime#' + tag || roomMatchesPage()) return;
+      ui.banner(`The party moved to “${label}”. Press Next Episode, or pick it from the episode list, and you'll be synced right away.`, 'here');
+    }, clicked ? 8000 : 0);
+  }
+
+  function clickPrimeEpisode(tag) {
+    const m = tag.match(/^(?:s(\d+))?e(\d+)$/);
+    if (!m) return false;
+    const want = +m[2];
+    const cur = identity.ep && identity.ep.tag.match(/^(?:s(\d+))?e(\d+)$/);
+    const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    // 1. The very next episode: Prime's own "next episode" button in the player.
+    if (cur && (cur[1] || '') === (m[1] || '') && +cur[2] + 1 === want) {
+      const NEXT = /next episode|next up|nächste folge|nächste episode|épisode suivant|siguiente episodio|episodio siguiente|prossimo episodio|volgende aflevering/i;
+      const next = [...document.querySelectorAll('button, [role="button"], a')].find((el) =>
+        /nexttitle|nextup|next-up|next-episode/i.test(el.className + ' ' + (el.getAttribute('data-testid') || '')) ||
+        NEXT.test((el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '').slice(0, 60)));
+      if (next) { next.click(); return true; }
+    }
+    // 2. The episode list on the season page (still in the page behind the player).
+    const EP = new RegExp(`(^|[^\\d])(ep\\.?|episode|folge|épisode|episodio|aflevering|e)\\s*${want}(?!\\d)|^\\s*${want}\\.\\s`, 'i');
+    const items = [...document.querySelectorAll('[data-automation-id*="ep"], li, [role="listitem"]')]
+      .filter((el) => EP.test((el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200)));
+    for (const item of items) {
+      const play = item.querySelector('a[href*="autoplay"], [data-automation-id*="play"], a[aria-label], button[aria-label]') ||
+        item.querySelector('a[href], button');
+      if (play && (visible(play) || play.href)) { play.click(); return true; }
+    }
+    return false;
+  }
 
   function seekTo(t) {
     ourSeekAt = Date.now();
@@ -377,9 +520,20 @@
     if (recentHardSeeks.length >= 5) { ui.toast('Your connection is struggling to keep up.'); recentHardSeeks = []; }
   }
 
+  let lastDur = { key: null, dur: 0 };
+  let holdUntil = 0;
   function tick() {
     ui.syncLabel();
+    if (video && Number.isFinite(video.duration) && video.duration > 0) {
+      const credits = Math.max(15, Math.min(90, video.duration * 0.1));
+      if (video.currentTime > video.duration - credits) lastNearEndAt = Date.now(); // in the credits
+      // The same <video> suddenly has a different length: the site swapped in another episode.
+      // Don't drag it to the old episode's timestamp while we work out what it is.
+      if (lastDur.key === video.key && Math.abs(lastDur.dur - video.duration) > 2) holdUntil = Date.now() + 4000;
+      lastDur = { key: video.key, dur: video.duration };
+    }
     if (!session || !video || !state || !roomMatchesPage() || video.readyState < 1) return;
+    if (pendingIdentity || Date.now() < holdUntil) return;
     const n = Date.now();
     const dur = Number.isFinite(video.duration) ? video.duration : 0;
     let target = expected();
@@ -427,7 +581,8 @@
       bindVideo(findVideo());
     }
     if (!video) { ui.toast('No video found on this page yet.'); return; }
-    conn.send({ t: 'load', page: true, url: cleanUrl(), title: pageTitle(), position: video.currentTime, playing: !video.paused });
+    identity = pageIdentity();
+    sendLoad(true);
   }
 
   // ------------------------------------------------------------ chat
@@ -669,6 +824,7 @@
   // ------------------------------------------------------------ boot
   (async () => {
     await loadSettings();
+    identity = pageIdentity();
     // Invite links look like https://site/watch/123#teleshare=ROOM&server=https%3A%2F%2Fserver
     const hash = new URLSearchParams(location.hash.slice(1));
     const fromHash = hash.get('teleshare');

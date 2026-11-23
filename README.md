@@ -15,7 +15,8 @@ npm test             # protocol tests
 
 **Put it online (free):** [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/reetuparnav/teleshare)
 Sign in with GitHub, click **Deploy**, and you get an address like `https://teleshare-xxxx.onrender.com`.
-Put that address in the extension's Settings → Server. The free plan sleeps after 15 minutes
+Put that address in the extension's Settings → Server (and in `DEFAULT_SERVER` in
+`extension/content.js` and `extension/popup.js` if you want it to be the default). The free plan sleeps after 15 minutes
 without visitors, so the first person to join may wait about a minute while it wakes up.
 
 To watch with friends who aren't on your network, deploy it anywhere that runs Node and allows
@@ -39,8 +40,11 @@ the video on whatever site you're on, using the same server, with a chat sidebar
 2. Click **🔗 Invite** in the sidebar and send the link. Friends open it, click
    **Open it with the Teleshare extension**, and land on the same video already in sync.
 3. Use the site's own play, pause and seek controls as usual. Everyone follows.
-4. For the next episode, go to it and click **Bring everyone here** in the sidebar. Everyone
-   else's tab follows automatically.
+4. Next episode: just go to it (click Next Episode, or let it auto-play) and everyone else's
+   tab follows. This works on Prime Video too, where the address doesn't change between
+   episodes: Teleshare reads the episode from Prime's player instead. If you wander to another
+   video without clicking (or while you weren't in sync), it only offers a **Bring everyone
+   here** button instead of moving people.
 
 Each viewer needs their own account for the streaming site. Teleshare only syncs, it never
 shares the stream.
